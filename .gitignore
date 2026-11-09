@@ -1,0 +1,9 @@
+.env
+telegram.session
+*.exe
+/server
+tmp/
+vendor/
+downloaded-video.mp4
+test-token.txt
+test-upload.txt

@@ -1,0 +1,151 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"mime"
+	"path/filepath"
+
+	"github.com/telegram-storage-api/internal/model"
+	"github.com/telegram-storage-api/internal/repository"
+	tgclient "github.com/telegram-storage-api/internal/telegram"
+)
+
+type FileService struct {
+	fileRepo *repository.FileRepository
+	tg       *tgclient.Client
+}
+
+func NewFileService(fileRepo *repository.FileRepository, tg *tgclient.Client) *FileService {
+	return &FileService{fileRepo: fileRepo, tg: tg}
+}
+
+func (s *FileService) Upload(ctx context.Context, userID int64, filePath, originalName string, fileSize int64) (*model.File, error) {
+	msgID, err := s.tg.UploadFile(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("telegram upload: %w", err)
+	}
+
+	mimeType := mime.TypeByExtension(filepath.Ext(originalName))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	file := &model.File{
+		UserID:        &userID,
+		FileName:      originalName,
+		FileSize:      fileSize,
+		MimeType:      mimeType,
+		TelegramMsgID: msgID,
+	}
+
+	return s.fileRepo.Create(file)
+}
+
+func (s *FileService) List(userID int64, limit, offset int) (*model.ListFilesResponse, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	files, total, err := s.fileRepo.ListByUser(userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	if files == nil {
+		files = []model.File{}
+	}
+
+	return &model.ListFilesResponse{Files: files, Total: total}, nil
+}
+
+func (s *FileService) GetFile(userID, fileID int64) (*model.File, error) {
+	file, err := s.fileRepo.FindByIDAndUser(fileID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if file == nil {
+		file, err = s.fileRepo.FindByID(fileID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if file == nil {
+		return nil, fmt.Errorf("file not found")
+	}
+	return file, nil
+}
+
+func (s *FileService) StreamFile(ctx context.Context, userID, fileID int64, w io.Writer) (*model.File, error) {
+	file, err := s.GetFile(userID, fileID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.tg.DownloadFile(ctx, file.TelegramMsgID, w); err != nil {
+		return nil, fmt.Errorf("download from telegram: %w", err)
+	}
+
+	return file, nil
+}
+
+func (s *FileService) Delete(ctx context.Context, userID, fileID int64) error {
+	file, err := s.GetFile(userID, fileID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.tg.DeleteMessage(ctx, file.TelegramMsgID); err != nil {
+		return fmt.Errorf("delete from telegram: %w", err)
+	}
+
+	return s.fileRepo.Delete(fileID, userID)
+}
+
+func (s *FileService) ListAll(limit, offset int) (*model.ListFilesResponse, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	files, total, err := s.fileRepo.ListAll(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	if files == nil {
+		files = []model.File{}
+	}
+
+	return &model.ListFilesResponse{Files: files, Total: total}, nil
+}
+
+func (s *FileService) GetFileByID(fileID int64) (*model.File, error) {
+	file, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		return nil, err
+	}
+	if file == nil {
+		return nil, fmt.Errorf("file not found")
+	}
+	return file, nil
+}
+
+func (s *FileService) StreamFilePublic(ctx context.Context, fileID int64, w io.Writer) (*model.File, error) {
+	file, err := s.GetFileByID(fileID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.tg.DownloadFile(ctx, file.TelegramMsgID, w); err != nil {
+		return nil, fmt.Errorf("download from telegram: %w", err)
+	}
+
+	return file, nil
+}
