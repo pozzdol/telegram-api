@@ -110,7 +110,9 @@ func main() {
 	{
 		public.GET("/files", fileHandler.PublicList)
 		public.GET("/files/:id/stream", fileHandler.PublicStream)
+		public.HEAD("/files/:id/stream", fileHandler.PublicStream)
 		public.GET("/files/:id/download", fileHandler.PublicDownload)
+		public.HEAD("/files/:id/download", fileHandler.PublicDownload)
 	}
 
 	// Authenticated endpoints

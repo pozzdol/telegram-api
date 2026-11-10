@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/telegram-storage-api/internal/model"
@@ -187,13 +188,29 @@ func (h *FileHandler) PublicStream(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", file.MimeType)
-	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", file.FileName))
+	h.servePublicFile(c, file, "inline")
+}
 
-	if _, err := h.fileService.StreamFilePublic(c.Request.Context(), fileID, c.Writer); err != nil {
-		c.JSON(http.StatusInternalServerError, model.APIResponse{
-			Success: false,
-			Message: err.Error(),
-		})
+func (h *FileHandler) servePublicFile(c *gin.Context, file *model.File, disposition string) {
+	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, file.FileName))
+	// Synced photos store the largest variant's size but download the "y" thumbnail, so their size is unreliable.
+	if file.FileSize > 0 && !strings.HasPrefix(file.MimeType, "image/") {
+		c.Header("Content-Length", strconv.FormatInt(file.FileSize, 10))
+	}
+
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
+
+	if _, err := h.fileService.StreamFilePublic(c.Request.Context(), file.ID, c.Writer); err != nil {
+		if !c.Writer.Written() {
+			c.Writer.Header().Del("Content-Length")
+			c.JSON(http.StatusInternalServerError, model.APIResponse{
+				Success: false,
+				Message: err.Error(),
+			})
+		}
 		return
 	}
 }
@@ -218,15 +235,7 @@ func (h *FileHandler) PublicDownload(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.FileName))
-
-	if _, err := h.fileService.StreamFilePublic(c.Request.Context(), fileID, c.Writer); err != nil {
-		c.JSON(http.StatusInternalServerError, model.APIResponse{
-			Success: false,
-			Message: err.Error(),
-		})
-		return
-	}
+	h.servePublicFile(c, file, "attachment")
 }
 
 func (h *FileHandler) Delete(c *gin.Context) {
