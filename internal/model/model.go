@@ -41,6 +41,15 @@ type FileResponse struct {
 	DownloadURL string `json:"download_url"`
 }
 
+type UploadVideoResponse struct {
+	FileResponse
+	Title       string `json:"judul"`
+	Description string `json:"deskripsi"`
+	Hashtag     string `json:"hashtag"`
+	SheetSynced bool   `json:"sheet_synced"`
+	SheetError  string `json:"sheet_error,omitempty"`
+}
+
 type ListFilesResponse struct {
 	Files []File `json:"files"`
 	Total int    `json:"total"`

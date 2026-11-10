@@ -113,6 +113,12 @@ func (r *FileRepository) ExistsByMsgID(msgID int) (bool, error) {
 	return exists, err
 }
 
+func (r *FileRepository) ExistsByFileName(fileName string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM files WHERE LOWER(TRIM(file_name)) = LOWER(TRIM($1)))`, fileName).Scan(&exists)
+	return exists, err
+}
+
 func (r *FileRepository) LastMsgID() (int, error) {
 	var msgID int
 	err := r.db.QueryRow(`SELECT COALESCE(MAX(telegram_msg_id), 0) FROM files`).Scan(&msgID)

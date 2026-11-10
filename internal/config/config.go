@@ -20,6 +20,10 @@ type Config struct {
 	TelegramAPIHash   string
 	TelegramPhone     string
 	TelegramChannelID int64
+
+	GoogleServiceAccountFile string
+	GoogleSheetID            string
+	GoogleSheetName          string
 }
 
 func Load() (*Config, error) {
@@ -48,6 +52,10 @@ func Load() (*Config, error) {
 		TelegramAPIHash:   getEnv("TELEGRAM_API_HASH", ""),
 		TelegramPhone:     getEnv("TELEGRAM_PHONE", ""),
 		TelegramChannelID: channelID,
+
+		GoogleServiceAccountFile: getEnv("GOOGLE_SERVICE_ACCOUNT_FILE", ""),
+		GoogleSheetID:            getEnv("GOOGLE_SHEET_ID", ""),
+		GoogleSheetName:          getEnv("GOOGLE_SHEET_NAME", "Sheet1"),
 	}, nil
 }
 

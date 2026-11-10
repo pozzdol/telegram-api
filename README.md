@@ -158,6 +158,49 @@ Response:
 }
 ```
 
+#### Upload Video + Metadata Google Sheet
+
+Mengunggah video ke Telegram sekaligus menulis baris `file_name | judul | deskripsi | hashtag` ke Google Sheet (baris dengan `file_name` sama diperbarui, jika belum ada ditambahkan). Membutuhkan `GOOGLE_SERVICE_ACCOUNT_FILE` dan `GOOGLE_SHEET_ID`; tanpa itu endpoint membalas `503`.
+
+```
+POST /api/files/upload-video
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file: <video .mp4/.mov/.m4v/.webm/.mkv>   (wajib)
+judul: <maks 100 karakter, tanpa < >>     (wajib)
+deskripsi: <teks>                          (opsional)
+hashtag: <#a #b>                           (opsional)
+```
+
+Total `judul + deskripsi + hashtag` maksimal 2200 karakter (batas caption Instagram). Nama file yang sudah ada ditolak dengan `409`.
+
+Response `201`:
+```json
+{
+  "success": true,
+  "message": "video uploaded and sheet updated",
+  "data": {
+    "file": { "id": 5, "file_name": "ep04.mp4", "mime_type": "video/mp4", "...": "..." },
+    "stream_url": "/api/public/files/5/stream",
+    "download_url": "/api/public/files/5/download",
+    "judul": "Judul video",
+    "deskripsi": "Deskripsi",
+    "hashtag": "#dibaliksaklar",
+    "sheet_synced": true
+  }
+}
+```
+
+Jika video tersimpan tetapi penulisan sheet gagal, respons tetap `201` dengan `sheet_synced: false` dan `sheet_error` — jangan ulangi request (video akan terunggah dua kali); tambahkan barisnya manual.
+
+Contoh:
+```bash
+curl -X POST http://localhost:8080/api/files/upload-video \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@ep04.mp4" -F "judul=Judul video" -F "deskripsi=Deskripsi" -F "hashtag=#dibaliksaklar"
+```
+
 #### List Files
 
 ```

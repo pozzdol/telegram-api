@@ -1,5 +1,6 @@
 .env
 telegram.session
+*service-account*.json
 *.exe
 /server
 tmp/

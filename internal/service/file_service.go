@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"path/filepath"
+	"strings"
 
 	"github.com/telegram-storage-api/internal/model"
 	"github.com/telegram-storage-api/internal/repository"
@@ -27,10 +28,7 @@ func (s *FileService) Upload(ctx context.Context, userID int64, filePath, origin
 		return nil, fmt.Errorf("telegram upload: %w", err)
 	}
 
-	mimeType := mime.TypeByExtension(filepath.Ext(originalName))
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
+	mimeType := DetectMimeType(originalName)
 
 	file := &model.File{
 		UserID:        &userID,
@@ -41,6 +39,31 @@ func (s *FileService) Upload(ctx context.Context, userID int64, filePath, origin
 	}
 
 	return s.fileRepo.Create(file)
+}
+
+// Go's built-in MIME table has no video types; without /etc/mime.types (e.g. slim containers)
+// videos would be stored as application/octet-stream and skipped by the upload workflow.
+var videoMimeTypes = map[string]string{
+	".mp4":  "video/mp4",
+	".m4v":  "video/x-m4v",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".mkv":  "video/x-matroska",
+}
+
+func DetectMimeType(fileName string) string {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if t := mime.TypeByExtension(ext); t != "" {
+		return t
+	}
+	if t, ok := videoMimeTypes[ext]; ok {
+		return t
+	}
+	return "application/octet-stream"
+}
+
+func (s *FileService) FileNameExists(fileName string) (bool, error) {
+	return s.fileRepo.ExistsByFileName(fileName)
 }
 
 func (s *FileService) List(userID int64, limit, offset int) (*model.ListFilesResponse, error) {

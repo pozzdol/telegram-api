@@ -1,24 +1,43 @@
 package handler
 
 import (
+	"context"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/telegram-storage-api/internal/model"
 	"github.com/telegram-storage-api/internal/service"
+	"github.com/telegram-storage-api/internal/sheets"
 )
+
+type SheetWriter interface {
+	Upsert(ctx context.Context, row sheets.Row) error
+}
 
 type FileHandler struct {
 	fileService *service.FileService
+	sheets      SheetWriter
 }
 
-func NewFileHandler(fileService *service.FileService) *FileHandler {
-	return &FileHandler{fileService: fileService}
+// sheetWriter may be nil; POST /api/files/upload-video then responds 503.
+func NewFileHandler(fileService *service.FileService, sheetWriter SheetWriter) *FileHandler {
+	return &FileHandler{fileService: fileService, sheets: sheetWriter}
+}
+
+func saveTempUpload(c *gin.Context, userID int64, file *multipart.FileHeader) (string, error) {
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("tg_upload_%d_%s", userID, file.Filename))
+	if err := c.SaveUploadedFile(file, tmpPath); err != nil {
+		return "", err
+	}
+	return tmpPath, nil
 }
 
 func (h *FileHandler) Upload(c *gin.Context) {
@@ -33,9 +52,8 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	tmpDir := os.TempDir()
-	tmpPath := filepath.Join(tmpDir, fmt.Sprintf("tg_upload_%d_%s", userID, file.Filename))
-	if err := c.SaveUploadedFile(file, tmpPath); err != nil {
+	tmpPath, err := saveTempUpload(c, userID, file)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.APIResponse{
 			Success: false,
 			Message: "failed to save uploaded file",
@@ -62,6 +80,119 @@ func (h *FileHandler) Upload(c *gin.Context) {
 			DownloadURL: fmt.Sprintf("/api/files/%d/download", result.ID),
 		},
 	})
+}
+
+const (
+	maxTitleRunes   = 100  // YouTube title limit
+	maxCaptionRunes = 2200 // Instagram caption limit; caption = judul + deskripsi + hashtag
+)
+
+func validateVideoMetadata(fileName, title, description, hashtag string) string {
+	if !strings.HasPrefix(service.DetectMimeType(fileName), "video/") {
+		return "file must be a video (.mp4, .mov, .m4v, .webm, .mkv)"
+	}
+	if title == "" {
+		return "judul is required"
+	}
+	if utf8.RuneCountInString(title) > maxTitleRunes {
+		return fmt.Sprintf("judul must be at most %d characters", maxTitleRunes)
+	}
+	if strings.ContainsAny(title, "<>") {
+		return "judul must not contain < or >"
+	}
+	parts := []string{title}
+	for _, p := range []string{description, hashtag} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if n := utf8.RuneCountInString(strings.Join(parts, "\n\n")); n > maxCaptionRunes {
+		return fmt.Sprintf("judul + deskripsi + hashtag must be at most %d characters (got %d)", maxCaptionRunes, n)
+	}
+	return ""
+}
+
+// UploadVideo stores a video in Telegram and upserts its metadata row in the Google Sheet.
+func (h *FileHandler) UploadVideo(c *gin.Context) {
+	if h.sheets == nil {
+		c.JSON(http.StatusServiceUnavailable, model.APIResponse{
+			Success: false,
+			Message: "google sheet is not configured on the server",
+		})
+		return
+	}
+
+	userID := c.GetInt64("user_id")
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.APIResponse{Success: false, Message: "file is required"})
+		return
+	}
+
+	title := strings.TrimSpace(c.PostForm("judul"))
+	description := strings.TrimSpace(c.PostForm("deskripsi"))
+	hashtag := strings.TrimSpace(c.PostForm("hashtag"))
+
+	if msg := validateVideoMetadata(file.Filename, title, description, hashtag); msg != "" {
+		c.JSON(http.StatusBadRequest, model.APIResponse{Success: false, Message: msg})
+		return
+	}
+
+	// The sheet is keyed by file_name, so a duplicate name would share (and overwrite) metadata.
+	exists, err := h.fileService.FileNameExists(file.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, model.APIResponse{
+			Success: false,
+			Message: fmt.Sprintf("a file named %q already exists; rename the video and try again", file.Filename),
+		})
+		return
+	}
+
+	tmpPath, err := saveTempUpload(c, userID, file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.APIResponse{Success: false, Message: "failed to save uploaded file"})
+		return
+	}
+	defer os.Remove(tmpPath)
+
+	result, err := h.fileService.Upload(c.Request.Context(), userID, tmpPath, file.Filename, file.Size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+
+	resp := model.UploadVideoResponse{
+		FileResponse: model.FileResponse{
+			File:        *result,
+			StreamURL:   fmt.Sprintf("/api/public/files/%d/stream", result.ID),
+			DownloadURL: fmt.Sprintf("/api/public/files/%d/download", result.ID),
+		},
+		Title:       title,
+		Description: description,
+		Hashtag:     hashtag,
+	}
+
+	// Detached from the request: the video is already stored, so the row must still be written
+	// even if the client disconnects.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err = h.sheets.Upsert(ctx, sheets.Row{FileName: result.FileName, Title: title, Description: description, Hashtag: hashtag})
+
+	message := "video uploaded and sheet updated"
+	if err != nil {
+		// 201 even on sheet failure: retrying the request would upload the video twice.
+		resp.SheetError = err.Error()
+		message = "video uploaded, but updating the sheet failed; add the row manually"
+	} else {
+		resp.SheetSynced = true
+	}
+
+	c.JSON(http.StatusCreated, model.APIResponse{Success: true, Message: message, Data: resp})
 }
 
 func (h *FileHandler) List(c *gin.Context) {

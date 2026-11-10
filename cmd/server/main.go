@@ -17,6 +17,7 @@ import (
 	"github.com/telegram-storage-api/internal/model"
 	"github.com/telegram-storage-api/internal/repository"
 	"github.com/telegram-storage-api/internal/service"
+	"github.com/telegram-storage-api/internal/sheets"
 	tgclient "github.com/telegram-storage-api/internal/telegram"
 )
 
@@ -65,8 +66,20 @@ func main() {
 	authService := service.NewAuthService(userRepo, cfg.JWTSecret)
 	fileService := service.NewFileService(fileRepo, tg)
 
+	var sheetWriter handler.SheetWriter
+	if cfg.GoogleServiceAccountFile != "" && cfg.GoogleSheetID != "" {
+		sheetClient, err := sheets.New(ctx, cfg.GoogleServiceAccountFile, cfg.GoogleSheetID, cfg.GoogleSheetName)
+		if err != nil {
+			log.Fatal("Failed to init Google Sheets client:", err)
+		}
+		sheetWriter = sheetClient
+		log.Printf("Google Sheet metadata enabled (sheet %q)", cfg.GoogleSheetName)
+	} else {
+		log.Println("Google Sheet metadata disabled: GOOGLE_SERVICE_ACCOUNT_FILE / GOOGLE_SHEET_ID not set")
+	}
+
 	authHandler := handler.NewAuthHandler(authService)
-	fileHandler := handler.NewFileHandler(fileService)
+	fileHandler := handler.NewFileHandler(fileService, sheetWriter)
 
 	// Start background sync: auto-detect files uploaded directly to Telegram
 	if tg.IsReady() {
@@ -120,6 +133,7 @@ func main() {
 	files.Use(middleware.JWTAuth(cfg.JWTSecret))
 	{
 		files.POST("/upload", fileHandler.Upload)
+		files.POST("/upload-video", fileHandler.UploadVideo)
 		files.GET("", fileHandler.List)
 		files.GET("/:id/stream", fileHandler.Stream)
 		files.GET("/:id/download", fileHandler.Download)
